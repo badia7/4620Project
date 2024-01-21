@@ -1,0 +1,291 @@
+---
+title: "Ames_EDA"
+author: "Nicholas Badia (badia.7)"
+date: "2023-11-16"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r message=FALSE}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(forcats)
+```
+## About The Data
+The training dataset has 1451 observations of 81 variables. There are a large number of categorical variables, as well as some numerical variables. We want these categorical variables to be encoded as factors.
+```{r}
+
+train = read.csv("/Users/shivanipatel/Downloads/train.csv")
+#train = read.csv("/Users/shivanirpatel/train.csv"), show_col_types = FALSE)
+train = train[, -1]
+train[] = lapply(train, function(x) {
+  if(is.character(x)) factor(x) else x
+}
+                 ) #changes the character columns in train to factors using lapply. keep numerics the same
+```
+
+```{r}
+str(train)
+```
+There are some categorical variables like OverallQual (Rates the overall material and finish of the house) that R treats as numerical because they use the values 1 through 10. We will adjust these manually.
+```{r}
+train = train %>%
+  mutate(across(c(MSSubClass, OverallQual, OverallCond,BsmtFullBath, BsmtHalfBath, FullBath, HalfBath, BedroomAbvGr, KitchenAbvGr, TotRmsAbvGrd, GarageCars, Fireplaces, MoSold, YrSold), as.factor)) #change these variables that are categorical but treated like numerical to factors as well
+```
+## Missing Values
+Now we will see how many NA values exist in our dataset.
+```{r}
+sum(is.na(train))
+colSums(is.na(train))
+```
+
+## Encoding problems
+For many of the categorical variables, "NA" just means that feature is irrelevant for that property. For example, a value of NA for the variable "BsmtCond" (Evaluates the general condition of the basement) just means that the house has no basement. We will change this encoding so R does not confuse this for missing data. 
+```{r}
+train = train %>% 
+  mutate(
+    LotFrontage = ifelse(is.na(LotFrontage), 0, LotFrontage),
+    Alley = ifelse(is.na(Alley), "NoAlley", Alley),
+    BsmtQual = ifelse(is.na(BsmtQual), "NoBsmt", BsmtQual),
+    BsmtCond = ifelse(is.na(BsmtCond), "NoBsmt", BsmtCond),
+    BsmtExposure = ifelse(is.na(BsmtExposure), "NoBsmt", BsmtExposure),
+    BsmtFinType1 = ifelse(is.na(BsmtFinType1), "NoBsmt", BsmtFinType1),
+    BsmtFinType2 = ifelse(is.na(BsmtFinType2), "NoBsmt", BsmtFinType2),
+    FireplaceQu = ifelse(is.na(FireplaceQu), "NoFire", FireplaceQu),
+    GarageType = ifelse(is.na(GarageType), "NoGarage", GarageType),
+    GarageYrBlt = ifelse(is.na(GarageYrBlt), 0, GarageYrBlt),
+    GarageFinish = ifelse(is.na(GarageFinish), "NoGarage", GarageFinish),
+    GarageQual = ifelse(is.na(GarageQual), "NoGarage", GarageQual),
+    GarageCond = ifelse(is.na(GarageCond), "NoGarage", GarageCond),
+    PoolQC = ifelse(is.na(PoolQC), "NoPool",  PoolQC),
+    Fence = ifelse(is.na(Fence), "NoFence", Fence),
+    MiscFeature = ifelse(is.na(MiscFeature), "NoMisc", MiscFeature)
+    )
+```
+Now we can get an accurate estimate of missing values in the dataset. 
+```{r}
+sum(is.na(train))
+colSums(is.na(train))
+```
+We will remove the remaining rows with NA values.
+```{r}
+train = na.omit(train)
+```
+## Variable of interest
+In this project we are interested in the sale price of these properties. Here is a histogram of all the sale prices
+```{r}
+ggplot(train, aes(x = SalePrice)) +
+  geom_histogram(binwidth = 50000, fill = "blue", color = "black") +
+  labs(title = "Distribution of Sale Prices", x = "Sale Price", y = "Frequency")
+
+cat("Mean Sale Price: $", mean(train$SalePrice), "\n")
+cat("Median Sale Price: $", median(train$SalePrice), "\n")
+```
+The mean sale price is $180,624 and the median is \$162,500. The distribution is clearly skewed to the right, which makes sense in the context of the problem, there are likely a few properties (mansions or large commercial buildings) selling for much more than the "average" property. Depending on our modeling strategy, we may want this sale price data to have a more normal distribution. We can achieve this with a log transformation
+
+```{r}
+train = train %>%
+  mutate(logPrice = log(SalePrice))
+
+ggplot(train, aes(x = logPrice)) +
+  geom_histogram(binwidth = .15, fill = "blue", color = "black") +
+  labs(title = "Distribution of log Sale Prices", x = "log Sale Price", y = "Frequency")
+
+cat("Mean Sale Price: $", exp(mean(train$logPrice)), "\n")
+cat("Median Sale Price: $", exp(median(train$logPrice)), "\n")
+```
+The log transformation makes the distribution more normal, and the measures of center (mean and median are closer together)
+
+## Variable Analysis
+There are 81 variables in this dataset. It is likely that many of them are not strongly related to sale price. If we want to accurately model the relationship between these variables and sale price we must manually remove some of the variables to reduce dimensionality.
+\
+\
+Just using intuition we can assume that variables related to the location, size, and quality of the property and its amenities will be strongly related to the sale price. The dataset has a large number of variables that describe these qualities. There are also variables that describe the years the property was built and renovated, zoning information, and conditions related to the sale. Many of these qualities are described by multiple variables in the dataset. For example, there are variables that measure the overall quality/ condition of the house, and variables that measure the quality/condition of the basement, kitchen, and exterior. There are also variables for the square footage on different floors, the amount of usable square footage, and the total living area square footage.
+\
+\
+It is likely that many of these variables are highly correlated, or will explain the same variability in sale price. We want to avoid keeping multiple variables that explain the same thing. We also want to remove variables that do not appear to be influential on sale price.
+\
+\
+We will determine which categorical variables are important  (relative to sale price ) by looking at box and whisker plots of log(sale price) for each value of the variable. These plots are hidden from the output for brevity
+```{r fig.show='hide'}
+categorical_vars = sapply(train, is.factor)
+
+for (var in names(train)[categorical_vars]) {
+  boxplot(logPrice ~ get(var), data = train, main = paste("Impact of", var, "on Sale Price"), xlab = var, ylab = "Sale Price")
+} #goes through all the columsn in train and finds the categorical variables which are factors. iterates to create boxplots for each one.
+```
+After reviewing the box plots for each categorical variable, we determined that the following categorical variables have some relevance, and they will be kept in the dataset. The plots for these variables will be shown later, in conjunction with the numerical variables of importance.
+```{r fig.show='hide'}
+train_categorical = train %>% dplyr::select(MSSubClass, MSZoning, Street, Neighborhood, Condition1, Condition2, BldgType, HouseStyle, OverallQual, OverallCond, RoofMatl, Exterior1st, Exterior2nd, MasVnrType, ExterQual, ExterCond, Foundation, Heating, HeatingQC, CentralAir, Electrical, FullBath, KitchenQual, Functional, Fireplaces, PavedDrive, SaleType, SaleCondition) #select these variables as important categorical
+```
+We will now do the same process for the numerical variables, using scatter plots instead of box plots. We will be looking for a some sort of relationship between the variable and log(sale price). For numerical data, we can also look at the correlation matrix to see what variables have strong correlations to each other, and to sale price. 
+
+```{r fig.show='hide', results='hide'}
+
+numerical_vars = sapply(train, is.numeric)
+
+
+for (var in names(train)[numerical_vars]) {
+  plot(train[[var]], train$logPrice, main = paste("Impact of", var, "on Log Sale Price"), xlab = var, ylab = "Log Sale Price", pch = 16, col = "black")
+}
+
+numerical_data = train[, numerical_vars]
+cor(numerical_data)
+```
+
+The following variables seem to have a relationship to the sale price, and they will be kept in the dataset. We selected 3 measures of size: Total Basement Square Feet, Above Ground Living Area, and Garage Area. These all measure different spaces of the property and seem to have strong relationships with sale price, but they may be correlated with each other. 
+
+```{r fig.show='hide'}
+train_numerical = train %>% dplyr::select(YearBuilt, TotalBsmtSF, GrLivArea, GarageArea)
+```
+
+Here are the relevant plots for each of the variables we have decided to keep in the dataset.
+```{r}
+par(mfrow = c(2,2))
+
+for (var in names(train_categorical)) {
+  boxplot(train$logPrice ~ get(var), data = train, main = paste("Impact of", var, "on log Sale Price"), xlab = var, ylab = "log Sale Price")
+}
+
+par(mfrow = c(1,2))
+for (var in names(train_numerical)) {
+  plot(train[[var]], train$logPrice, main = paste("Impact of", var, "on Log Sale Price"), xlab = var, ylab = "log Sale Price", pch = 20, col = "black")
+}
+
+```
+
+##Ordered Factors
+For some of the categorical variables, there is a natural ordering to the possible values of that variable. We want these to be treated as "ordered factors" so they are evaluated properly in the modeling process. 
+```{r}
+train$OverallQual = factor(train$OverallQual, ordered = TRUE, levels = 1:10)
+train$OverallCond = factor(train$OverallCond, ordered = TRUE, levels = 1:10)
+train$HeatingQC = factor(train$HeatingQC, ordered = TRUE, levels = c("Po", "Fa", "TA", "Gd", "Ex"))
+train$FullBath = factor(train$FullBath,ordered = TRUE, levels = 0:3)
+train$KitchenQual = factor(train$KitchenQual, ordered = TRUE, levels = c("Po", "Fa", "TA", "Gd", "Ex"))
+train$Functional = factor(train$Functional, ordered = TRUE, levels = c("Sal", "Sev", "Maj2", "Maj1", "Mod", "Min2", "Min1", "Typ"))
+
+```
+## Prepare for modeling 
+Now we create the dataset we will use for the modeling process.
+```{r}
+train_fin = train %>% dplyr::select(MSSubClass, MSZoning, Street, Neighborhood, Condition1, Condition2, BldgType, HouseStyle, OverallQual, OverallCond, RoofMatl, Exterior1st, Exterior2nd, MasVnrType, ExterQual, ExterCond, Foundation, Heating, HeatingQC, CentralAir, Electrical, FullBath, KitchenQual, Functional, Fireplaces, PavedDrive, SaleType, SaleCondition, YearBuilt, TotalBsmtSF, GrLivArea, GarageArea, SalePrice, logPrice)
+str(train_fin)
+summary(train_fin)
+```
+
+We will apply the appropriate transformations to the test dataset so it matches the test dataset. 
+```{r}
+test = read.csv("/Users/shivanipatel/Downloads/test_new.csv")
+test = test[, -1]
+test[] = lapply(test, function(x) {
+  if(is.character(x)) factor(x) else x
+})
+
+test = test %>%
+  mutate(across(c(MSSubClass, OverallQual, OverallCond, FullBath,Fireplaces), as.factor))
+
+test= test %>%
+  mutate(logPrice = log(SalePrice))
+```
+
+```{r}
+sum(is.na(test))
+colSums(is.na(test))
+```
+
+```{r}
+test = test %>% 
+  mutate(
+    LotFrontage = ifelse(is.na(LotFrontage), 0, LotFrontage),
+    Alley = ifelse(is.na(Alley), "NoAlley", Alley),
+    BsmtQual = ifelse(is.na(BsmtQual), "NoBsmt", BsmtQual),
+    BsmtCond = ifelse(is.na(BsmtCond), "NoBsmt", BsmtCond),
+    BsmtExposure = ifelse(is.na(BsmtExposure), "NoBsmt", BsmtExposure),
+    BsmtFinType1 = ifelse(is.na(BsmtFinType1), "NoBsmt", BsmtFinType1),
+    BsmtFinType2 = ifelse(is.na(BsmtFinType2), "NoBsmt", BsmtFinType2),
+    FireplaceQu = ifelse(is.na(FireplaceQu), "NoFire", FireplaceQu),
+    GarageType = ifelse(is.na(GarageType), "NoGarage", GarageType),
+    GarageYrBlt = ifelse(is.na(GarageYrBlt), 0, GarageYrBlt),
+    GarageFinish = ifelse(is.na(GarageFinish), "NoGarage", GarageFinish),
+    GarageQual = ifelse(is.na(GarageQual), "NoGarage", GarageQual),
+    GarageCond = ifelse(is.na(GarageCond), "NoGarage", GarageCond),
+    PoolQC = ifelse(is.na(PoolQC), "NoPool",  PoolQC),
+    Fence = ifelse(is.na(Fence), "NoFence", Fence),
+    MiscFeature = ifelse(is.na(MiscFeature), "NoMisc", MiscFeature)
+    )
+```
+
+```{r}
+test = na.omit(test)
+sum(is.na(test))
+colSums(is.na(test))
+```
+
+```{r}
+test$OverallQual = factor(test$OverallQual, ordered = TRUE, levels = 1:10)
+test$OverallCond = factor(test$OverallCond, ordered = TRUE, levels = 1:10)
+test$HeatingQC = factor(test$HeatingQC, ordered = TRUE, levels = c("Po", "Fa", "TA", "Gd", "Ex"))
+test$FullBath = factor(test$FullBath,ordered = TRUE, levels = 0:3)
+test$KitchenQual = factor(test$KitchenQual, ordered = TRUE, levels = c("Po", "Fa", "TA", "Gd", "Ex"))
+test$Functional = factor(test$Functional, ordered = TRUE, levels = c("Sal", "Sev", "Maj2", "Maj1", "Mod", "Min2", "Min1", "Typ"))
+```
+
+```{r}
+test_fin = test %>% dplyr::select(MSSubClass, MSZoning, Street, Neighborhood, Condition1, Condition2, BldgType, HouseStyle, OverallQual, OverallCond, RoofMatl, Exterior1st, Exterior2nd, MasVnrType, ExterQual, ExterCond, Foundation, Heating, HeatingQC, CentralAir, Electrical, FullBath, KitchenQual, Functional, Fireplaces, PavedDrive, SaleType, SaleCondition, YearBuilt, TotalBsmtSF, GrLivArea, GarageArea, SalePrice, logPrice)
+```
+
+
+
+Partial Least Squares
+
+Using partial least squares is a good way to reduce the dimension of our predictor set. Choosing partial least squares over principle component regression is necessary because in this specific situation we want to emphasize accuracy of the prediction of SalePrice using our given predictors. Partial least squares will be beneficial as it is a supervised method of learning and will map the relation ship of our X's with Y better.
+
+
+Fit a partial least squares model on the training set. Running the code with the argument scale=TRUE, we get warnings indicating that many of the variables have very low variability.We must indicate to only scale the numerical values.
+
+First we check variability
+```{r}
+summary(train_fin)
+set.seed(400)
+
+fit.pls = plsr(logPrice~.,data=train_fin,scale=list(numeric=TRUE, center=TRUE, scale.=TRUE),validation="CV")
+
+summary(fit.pls) # choose the number of components based off smallest value of root mean sq error. partial least sq dont fit x values as well as pca but captures more of the relationship with the response!
+```
+According to the output 12 components could be the way to go as right after 12, the Root Mean Squared Error starts increasing.
+
+The percent of variance in our response explained only really changes by about one percent once we look at components greater than 12, this doesn't seem like that big of a deal.
+
+Plotting the Mean Squared Error
+
+```{r}
+validationplot(fit.pls,val.type="MSEP", xlim=c(0,40))
+```
+The elbow of this plot is close to 9. This can be another component number we consider along with 12.
+
+
+
+Fit our two partial least squares models with m=9 and m=12 to the testing data
+
+```{r}
+fit.pls2a = plsr(logPrice~.,data=test_fin,scale=list(numeric=TRUE, center=TRUE, scale.=TRUE),ncomp=9)#this model partial least sq with 9 components
+fit.pls2b = plsr(logPrice~.,data=test_fin,scale=list(numeric=TRUE, center=TRUE, scale.=TRUE),ncomp=12)#this model partial least sq with 12 components
+
+pls.pred.a= predict(fit.pls2a,ncomp=9)
+pls.pred.b= predict(fit.pls2b,ncomp=12)
+
+```
+
+Report the Mean Squared Error of both models
+```{r}
+MSEpls2.a =mean((as.vector(pls.pred.a)-test_fin$logPrice)^2)
+MSEpls2.b =mean((as.vector(pls.pred.b)-test_fin$logPrice)^2)
+
+MSEpls2.a
+MSEpls2.b
+```
+
+Both of the Mean Squared Errors are incredibly close to each other. The only differ by .0002. In that case it is alway the best to choose the most simple model, being the one with 9 components. 
+
+Therefore the Partial Least Squares method relays the optimal model to have 9 components with a Mean Squared Error of .1614924. While PLS provided us with a number of relevant predictors, it does not give us the specific important predictors. We can use the number 9 as reference when deciding which model is the best.
